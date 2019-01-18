@@ -63,6 +63,19 @@ class FC
     }
     */
 
+    /*
+
+    COPY PASTA'D FROM SETUP CONFIG FILE FOR CONFIGURATOR:
+
+    # mixer
+    mmix 0  1.000 -1.000  1.000 -1.000
+    mmix 1  1.000 -1.000 -1.000  1.000
+    mmix 2  1.000  1.000  1.000  1.000
+    mmix 3  1.000  1.000 -1.000 -1.000
+     */
+
+    const float THROTTLE_CLIPPING_FACTOR = 0.33;
+
     const int FD_ROLL = 0;
     const int FD_PITCH = 1;
     const int FD_YAW = 2;
@@ -81,6 +94,14 @@ class FC
     int[] attitude = {0, 0, 0}
 
     int holding_angle = 0;
+
+
+	// custom constrain function for c#
+	public static int constrain( int value, int min, int max ){
+		return (value < min) ? min : (value > max) ? max : value;
+	}
+
+    static float motorMixRange = 0.0;    
 
     class PIDState
     {
@@ -108,7 +129,7 @@ class FC
         float output;
     }
 
-    PIDState pidState[4];
+    PIDState pidState[3];
 
 
     static void Main(string[] args)
@@ -225,9 +246,50 @@ class FC
         pidState.output = constrainf(newPTerm + newFFTerm + pidState->errorGyroIf, -pidSumLimit, pidSumLimit);
     }
 
-	void mixer(float pitch, float roll)
-	{
+
+    // todo: get range of input
+    private void mixer(float pitch, float roll, float max_output, float max_input)
+    {
+	int[MAX_SUPPORTED_MOTORS] rpyMix;
+	int max_rpyMix = 0;
+	int min_rpyMix = 0;
+
+
+	for(int i = 0; i < 2; i++){
+		rpyMix[i] = pitch * currentMixer[i].pitch + roll * currentMixer[i].roll;
+		if(rpyMix[i] > max_rpyMix) max_rpyMix = rpyMix[i];
+		if(rpyMix[i] < min_rpyMix) min_rpyMix = rpyMix[i];
 	}
+
+	int rpyMixRange = max_rpyMix - min_rpyMix;
+	int throttleRange, throttleCommand, throttleMin, throttleMax;
+	int throttlePrevious = 0;
+
+	throttleCommand = 0; // todo: fix this, the C code takes in rcCommand[THROTTLE] here
+	throttleMin = 0;     // this variable is assigned to motorConfig()->minthrottle
+	throttleMax = 0;     // this variable is assigned to motorConfig()->maxthrottle
+
+	throttleRange = throttleMax - throttleMin;
+
+	motorMixRange = (float)rpyMixRange / (float)throttleRange;
+
+	if(motorMixRange > 1.0){
+	    for(int i = 0; i < 2; i++){
+			rpyMix[i] /= motorMixRange;
+		}
+		throttleMin = throttleMin + (throttleRange/2) - (throttleRange * THROTTLE_CLIPPING_FACTOR / 2);
+		throttleMax = throttleMin + (throttleRange/2) + (throttleRange * THROTTLE_CLIPPING_FACTOR / 2);
+	} else {
+	    throttleMin = Math.Min(throttleMin + (rpyMixRange / 2), throttleMin + (throttleRange / 2) - (throttleRange * THROTTLE_CLIPPING_FACTOR / 2));
+		throttleMax = Math.Max(throttleMax - (rpyMixRange / 2), throttleMin + (throttleRange / 2) + (throttleRange * THROTTLE_CLIPPING_FACTOR / 2));
+	}
+
+	for(int i = 0; i < 2; i++){
+		motor[i] = rpyMix[i] + constrain(throttleCommand * currentMixer[i].throttle, throttleMin, throttleMax);
+		// next part of code starts with "if(failsafeIsActive()"
+	}
+	
+    }
 	
     private float pidRcCommandToRate(int axis, int rate)
     {
